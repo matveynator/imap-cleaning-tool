@@ -7,7 +7,7 @@ A lightweight Go utility for backing up, restoring, and selectively deleting ema
 ## 🔧 Usage
 
 ```bash
-go run imap-cleaning-tool.go -h
+imap-tool -h
 ```
 
 ```
@@ -36,7 +36,7 @@ go run imap-cleaning-tool.go -h
 ## 🗂 Backup Example
 
 ```bash
-go run imap-cleaning-tool.go \
+imap-tool \
   -email alice@example.com \
   -password XXXXXX \
   -imap imap.example.com:993 \
@@ -55,7 +55,7 @@ go run imap-cleaning-tool.go \
 ## ♻️ Restore Example
 
 ```bash
-go run imap-cleaning-tool.go \
+imap-tool \
   -email bob@example.net \
   -password XXXXXX \
   -imap imap.example.net:993 \
@@ -75,7 +75,7 @@ go run imap-cleaning-tool.go \
 Delete all emails **from** a specific sender, e.g., `newsletter@updates.com`:
 
 ```bash
-go run imap-cleaning-tool.go \
+imap-tool \
   -email bob@example.net \
   -password XXXXXX \
   -imap imap.example.net:993
@@ -104,7 +104,7 @@ Delete ALL from "newsletter@updates.com" (226)? (y/N):
 Delete all emails **sent to** a specific address, e.g., `support@example.org`:
 
 ```bash
-go run imap-cleaning-tool.go \
+imap-tool \
   -email alice@example.com \
   -password XXXXXX \
   -imap imap.example.com:993 \
