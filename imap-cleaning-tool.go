@@ -1,70 +1,145 @@
-// imap-cleaning-tool.go  •  2025‑05‑13
+// imap-cleaning-tool.go  ·  2025‑05‑13
 //
-// Fast IMAP scanner / cleaner with real‑time progress.
-//  • -match "text"         delete everything whose FIELD contains text
-//  • -field from|to|subject  grouping / filtering field   (default: from)
-//  • -size                 include MB column in *stats* mode (size always on in -match)
-//  • if -match omitted     statistics mode (Top‑N, interactive delete)
-//  • TLS fallback: modern → legacy → (optional) plain  (use -allow-plain on port 143)
-
+// IMAP cleaner / statistics / backup‑restore with live progress lines.
+//
+//  Flags
+//    -email  user@example.com   ·required
+//    -password  ***             ·required
+//    -imap host:port            (auto‑guess if omitted)
+//    -field from|to|subject     (stats & -match)   default: from
+//    -match "text"              (delete interactively)
+//    -size                      (add MB column to stats)
+//    -backup   mailbox.tgz      (make backup & exit)
+//    -restore  mailbox.tgz      (restore & exit)
+//    -allow-plain               (allow PLAINTEXT on :143)
+//
+//  Typical runs
+//    go run imap-cleaning-tool.go -email you -password pw -match spam
+//    go run imap-cleaning-tool.go -email you -password pw -size
+//    go run imap-cleaning-tool.go -email you -password pw -backup all.tgz
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
-	"net/mail"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-	"sync/atomic"
+	"time"
 
 	"github.com/emersion/go-imap"
 	"github.com/emersion/go-imap/client"
 )
 
-/* ───── Flags ───── */
+/* ── flags ─────────────────────────────────────────────── */
 
 var (
-	email      = flag.String("email", "", "Email address")
-	password   = flag.String("password", "", "Password")
-	imapHost   = flag.String("imap", "", "IMAP host:port (guessed if empty)")
-	match      = flag.String("match", "", "Text to match (deletes interactively)")
-	field      = flag.String("field", "from", "Header to use: from | to | subject")
-	sizeFlag   = flag.Bool("size", false, "Add MB column (stats mode only, slower)")
-	allowPlain = flag.Bool("allow-plain", false, "Allow PLAINTEXT fallback on port 143")
-	pageSize   = 20
+	emailF    = flag.String("email", "", "Email")
+	passF     = flag.String("password", "", "Password")
+	imapF     = flag.String("imap", "", "IMAP host:port")
+	fieldF    = flag.String("field", "from", "from | to | subject")
+	matchF    = flag.String("match", "", "Text to match in FIELD")
+	sizeF     = flag.Bool("size", false, "Add MB column in stats")
+	backupF   = flag.String("backup", "", "Create backup & exit")
+	restoreF  = flag.String("restore", "", "Restore backup & exit")
+	allowPlnF = flag.Bool("allow-plain", false, "Allow PLAINTEXT on 143")
+	pageSz    = 20
 )
 
-/* ───── TLS helper ───── */
+/* ── helper funcs ───────────────────────────────────────── */
+
+func trim(s string) string {
+	if len(s) <= 40 {
+		return s
+	}
+	return s[:37] + "…"
+}
+func classify(m *imap.Message, fld string) string {
+	addr := func(a []*imap.Address) string {
+		if len(a) == 0 {
+			return "(none)"
+		}
+		return a[0].MailboxName + "@" + a[0].HostName
+	}
+	switch fld {
+	case "to":
+		return addr(m.Envelope.To)
+	case "subject":
+		sub := m.Envelope.Subject
+		if len(sub) > 60 {
+			sub = sub[:57] + "…"
+		}
+		return sub
+	default:
+		return addr(m.Envelope.From)
+	}
+}
+
+/* ── stats bucket ──────────────────────────────────────── */
+
+type bucket struct {
+	Key      string
+	Cnt      int
+	Bytes    int64
+	ByFolder map[string][]uint32
+}
+
+func (b *bucket) add(folder string, uid uint32, sz int64) {
+	b.Cnt++
+	b.Bytes += sz
+	b.ByFolder[folder] = append(b.ByFolder[folder], uid)
+}
+
+/* ── safe delete ───────────────────────────────────────── */
+
+func wipe(cli *client.Client, sets map[string][]uint32) {
+	for f, ids := range sets {
+		cli.Select(f, false)
+		ss := new(imap.SeqSet)
+		ss.AddNum(ids...)
+		cli.Store(ss, imap.FormatFlagsOp(imap.AddFlags, true),
+			[]interface{}{imap.DeletedFlag}, nil)
+		cli.Expunge(nil)
+	}
+	fmt.Println("✓ deleted")
+}
+
+/* ── TLS / connect helpers ─────────────────────────────── */
 
 func dialSmart(addr string) (*client.Client, error) {
 	host, port, _ := net.SplitHostPort(addr)
 	mod := &tls.Config{ServerName: host, InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}
 	leg := &tls.Config{ServerName: host, InsecureSkipVerify: true, MinVersion: tls.VersionTLS10,
-		CipherSuites: []uint16{tls.TLS_RSA_WITH_RC4_128_SHA, tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
-			tls.TLS_RSA_WITH_AES_128_CBC_SHA, tls.TLS_RSA_WITH_AES_256_CBC_SHA}}
-
-	connect := func(cfg *tls.Config) (*client.Client, error) {
+		CipherSuites: []uint16{
+			tls.TLS_RSA_WITH_RC4_128_SHA,
+			tls.TLS_RSA_WITH_3DES_EDE_CBC_SHA,
+			tls.TLS_RSA_WITH_AES_128_CBC_SHA,
+			tls.TLS_RSA_WITH_AES_256_CBC_SHA}}
+	connect := func(c *tls.Config) (*client.Client, error) {
 		switch port {
 		case "993":
-			return client.DialTLS(addr, cfg)
+			return client.DialTLS(addr, c)
 		case "143":
-			c, err := client.Dial(addr)
+			cl, err := client.Dial(addr)
 			if err != nil {
 				return nil, err
 			}
-			if err = c.StartTLS(cfg); err != nil {
-				c.Logout()
+			if err = cl.StartTLS(c); err != nil {
+				cl.Logout()
 				return nil, err
 			}
-			return c, nil
-		default:
-			return nil, fmt.Errorf("unsupported port %s", port)
+			return cl, nil
 		}
+		return nil, fmt.Errorf("unsupported port")
 	}
 	if c, err := connect(mod); err == nil {
 		fmt.Println("✅  Modern TLS")
@@ -74,261 +149,260 @@ func dialSmart(addr string) (*client.Client, error) {
 		fmt.Println("⚠️  Legacy TLS")
 		return c, nil
 	}
-	if port == "143" && *allowPlain {
-		fmt.Println("⚠️  Plain IMAP (NO encryption)")
+	if port == "143" && *allowPlnF {
+		fmt.Println("⚠️  Plain IMAP")
 		return client.Dial(addr)
 	}
-	return nil, fmt.Errorf("TLS negotiation failed")
+	return nil, fmt.Errorf("TLS failed")
 }
 
-func guessServer(addr string) (string, error) {
-	a, _ := mail.ParseAddress(addr)
-	domain := strings.Split(a.Address, "@")[1]
+func guessServer(email string) string {
+	d := strings.Split(email, "@")[1]
 	for _, p := range []string{"imap.", "mail.", ""} {
-		h := p + domain + ":993"
+		h := p + d + ":993"
 		if _, err := tls.Dial("tcp", h, &tls.Config{InsecureSkipVerify: true}); err == nil {
-			return h, nil
+			return h
 		}
 	}
-	return domain + ":143", nil
+	return d + ":143"
 }
 
-/* ───── Data ───── */
+/* ── backup & restore ─────────────────────────────────── */
 
-type bucket struct {
-	Key       string
-	Count     int
-	Bytes     int64
-	ByFolder  map[string][]uint32
-}
+func backupAll(cli *client.Client, tgz string) error {
+	f, err := os.Create(tgz)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gw := gzip.NewWriter(f)
+	defer gw.Close()
+	tw := tar.NewWriter(gw)
+	defer tw.Close()
 
-func (b *bucket) add(folder string, id uint32, size int64) {
-	b.Count++
-	b.Bytes += size
-	b.ByFolder[folder] = append(b.ByFolder[folder], id)
-}
-
-/* ───── Utility helpers ───── */
-
-func classify(m *imap.Message, fld string) string {
-	addr := func(l []*imap.Address) string {
-		if len(l) == 0 {
-			return "(none)"
+	var folders, msgs int64
+	mbc := make(chan *imap.MailboxInfo, 64)
+	go func() { _ = cli.List("", "*", mbc) }()
+	for mb := range mbc {
+		sel := true
+		for _, a := range mb.Attributes {
+			if a == imap.NoSelectAttr {
+				sel = false
+			}
 		}
-		return l[0].MailboxName + "@" + l[0].HostName
-	}
-	switch fld {
-	case "to":
-		return addr(m.Envelope.To)
-	case "subject":
-		s := m.Envelope.Subject
-		if len(s) > 60 {
-			s = s[:57] + "…"
+		if !sel {
+			continue
 		}
-		return s
-	default:
-		return addr(m.Envelope.From)
+		if _, e := cli.Select(mb.Name, false); e != nil {
+			continue
+		}
+		uids, _ := cli.Search(imap.NewSearchCriteria())
+		if len(uids) == 0 {
+			continue
+		}
+		folders++
+		seq := new(imap.SeqSet)
+		seq.AddNum(uids...)
+		msgCh := make(chan *imap.Message, 32)
+		go func() { _ = cli.Fetch(seq, []imap.FetchItem{imap.FetchUid, imap.FetchRFC822}, msgCh) }()
+		for m := range msgCh {
+			if m == nil {
+				continue
+			}
+			data, _ := io.ReadAll(m.GetBody(&imap.BodySectionName{}))
+			h := &tar.Header{Name: fmt.Sprintf("%s/%d.eml", mb.Name, m.Uid), Size: int64(len(data)), Mode: 0600}
+			tw.WriteHeader(h)
+			tw.Write(data)
+			msgs++
+			fmt.Printf("\r📦 Backup folders:%d msgs:%d", folders, msgs)
+		}
 	}
+	fmt.Print("\r                                        \r")
+	return nil
 }
 
-func trim(s string) string {
-	if len(s) <= 40 {
-		return s
+func restoreAll(cli *client.Client, tgz string) error {
+	f, err := os.Open(tgz)
+	if err != nil {
+		return err
 	}
-	return s[:37] + "…"
+	defer f.Close()
+	gr, _ := gzip.NewReader(f)
+	defer gr.Close()
+	tr := tar.NewReader(gr)
+
+	var restored int64
+	for {
+		h, e := tr.Next()
+		if e == io.EOF {
+			break
+		}
+		if h.FileInfo().IsDir() {
+			continue
+		}
+		fold := filepath.Dir(h.Name)
+		if fold == "." {
+			fold = "INBOX"
+		}
+		cli.Create(fold)
+		data, _ := io.ReadAll(tr)
+		cli.Append(fold, nil, time.Now(), bytes.NewReader(data))
+		restored++
+		fmt.Printf("\r⬆️ Restore msgs:%d", restored)
+	}
+	fmt.Print("\r                                   \r")
+	return nil
 }
 
-func wipe(cli *client.Client, sets map[string][]uint32) {
-	for folder, ids := range sets {
-		_, _ = cli.Select(folder, false)
-		ss := new(imap.SeqSet)
-		ss.AddNum(ids...)
-		cli.Store(ss, imap.FormatFlagsOp(imap.AddFlags, true), []interface{}{imap.DeletedFlag}, nil)
-		cli.Expunge(nil)
-	}
-	fmt.Println("✓ deleted")
-}
-
-/* ───── main ───── */
+/* ── main ─────────────────────────────────────────────── */
 
 func main() {
 	flag.Parse()
-	if *email == "" || *password == "" {
+	if *emailF == "" || *passF == "" {
 		flag.Usage()
-		os.Exit(1)
+		return
+	}
+	if (*backupF != "" || *restoreF != "") && *matchF != "" {
+		log.Fatal("-match cannot be combined with backup/restore")
 	}
 
-	statsMode := *match == ""
-	sizeOn := !statsMode || *sizeFlag // size always on when match mode
-
-	// find server & connect
-	server := *imapHost
-	if server == "" {
-		var err error
-		server, err = guessServer(*email)
-		if err != nil {
-			log.Fatal(err)
-		}
+	// connect
+	host := *imapF
+	if host == "" {
+		host = guessServer(*emailF)
 	}
-	cli, err := dialSmart(server)
+	cli, err := dialSmart(host)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer cli.Logout()
-	if err := cli.Login(*email, *password); err != nil {
+	if err := cli.Login(*emailF, *passF); err != nil {
 		log.Fatal("login:", err)
 	}
 
-	if sizeOn {
-		fmt.Println("📏 Size counting: ON")
-	} else {
-		fmt.Println("📏 Size counting: OFF (add -size for MB column)")
+	/* backup / restore shortcuts */
+	if *backupF != "" {
+		fmt.Println("🔄 Backup →", *backupF)
+		if err := backupAll(cli, *backupF); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("✓ backup done")
+		return
 	}
-	fmt.Println("🔐  Auth OK")
+	if *restoreF != "" {
+		fmt.Println("🔄 Restore ←", *restoreF)
+		if err := restoreAll(cli, *restoreF); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("✓ restore done")
+		return
+	}
 
-	/* ── discover selectable folders ── */
-	folders := []*imap.MailboxInfo{}
-	box := make(chan *imap.MailboxInfo, 64)
-	go func() { _ = cli.List("", "*", box) }()
-	for mb := range box {
-		skip := false
-		for _, attr := range mb.Attributes {
-			if attr == imap.NoSelectAttr {
-				skip = true
+	statsMode := *matchF == ""
+	sizeOn := !statsMode || *sizeF
+	if sizeOn {
+		fmt.Println("📏 Size counting ON")
+	}
+
+	/* discover selectable folders */
+	folders := []string{"INBOX"}
+	mbCh := make(chan *imap.MailboxInfo, 64)
+	go func() { _ = cli.List("", "*", mbCh) }()
+	for mb := range mbCh {
+		selectable := true
+		for _, a := range mb.Attributes {
+			if a == imap.NoSelectAttr {
+				selectable = false
 				break
 			}
 		}
-		if !skip {
-			folders = append(folders, mb)
+		if selectable && mb.Name != "INBOX" {
+			folders = append(folders, mb.Name)
 		}
 	}
-	// always include INBOX
-	inboxPresent := false
-	for _, f := range folders {
-		if strings.EqualFold(f.Name, "INBOX") {
-			inboxPresent = true
-			break
-		}
-	}
-	if !inboxPresent {
-		folders = append(folders, &imap.MailboxInfo{Name: "INBOX"})
-	}
-	if len(folders) == 0 {
-		log.Fatal("No selectable mailboxes")
-	}
 
-	/* ── counters ── */
-	var processedFolders int32
-	var matches int64
-	var scanned int64
-	var groups int64
-
-	/* ── buckets ── */
 	buckets := map[string]*bucket{}
-	target := &bucket{Key: *match, ByFolder: map[string][]uint32{}}
+	target := &bucket{Key: *matchF, ByFolder: map[string][]uint32{}}
+	var totMsgs, matchMsgs int64
 
-	/* ── sequential scan (one folder ⇒ one IMAP command) ── */
-	for i, mb := range folders {
-		if _, err := cli.Select(mb.Name, false); err != nil {
-			atomic.AddInt32(&processedFolders, 1)
-			continue
-		}
-		criteria := imap.NewSearchCriteria()
+	for i, folder := range folders {
+		cli.Select(folder, false)
+		crit := imap.NewSearchCriteria()
 		if !statsMode {
-			criteria.Header.Add(strings.Title(*field), *match)
+			crit.Header.Add(strings.Title(*fieldF), *matchF)
 		}
-		ids, _ := cli.Search(criteria)
-		if len(ids) == 0 && statsMode {
-			criteria = imap.NewSearchCriteria()
-			ids, _ = cli.Search(criteria)
+		uids, _ := cli.Search(crit)
+		if len(uids) == 0 && statsMode {
+			crit = imap.NewSearchCriteria()
+			uids, _ = cli.Search(crit)
 		}
-		if len(ids) == 0 {
-			atomic.AddInt32(&processedFolders, 1)
+		if len(uids) == 0 {
 			continue
 		}
-
 		seq := new(imap.SeqSet)
-		seq.AddNum(ids...)
+		seq.AddNum(uids...)
 		items := []imap.FetchItem{imap.FetchEnvelope}
 		if sizeOn {
 			items = append(items, imap.FetchRFC822Size)
 		}
-		msgs := make(chan *imap.Message, 32)
-		go func() { _ = cli.Fetch(seq, items, msgs) }()
-
-		for msg := range msgs {
-			if msg == nil || msg.Envelope == nil {
-				continue
-			}
+		mc := make(chan *imap.Message, 32)
+		go func() { _ = cli.Fetch(seq, items, mc) }()
+		for m := range mc {
 			if statsMode {
-				key := classify(msg, *field)
+				key := classify(m, *fieldF)
 				if buckets[key] == nil {
 					buckets[key] = &bucket{Key: key, ByFolder: map[string][]uint32{}}
-					atomic.AddInt64(&groups, 1)
 				}
-				buckets[key].add(mb.Name, msg.SeqNum, int64(msg.Size))
-				atomic.AddInt64(&scanned, 1)
-			} else { // match mode
-				val := strings.ToLower(classify(msg, *field))
-				if !strings.Contains(val, strings.ToLower(*match)) {
-					continue
-				}
-				target.add(mb.Name, msg.SeqNum, int64(msg.Size))
-				atomic.AddInt64(&matches, 1)
+				buckets[key].add(folder, m.SeqNum, int64(m.Size))
+				totMsgs++
+			} else if strings.Contains(strings.ToLower(classify(m, *fieldF)), strings.ToLower(*matchF)) {
+				target.add(folder, m.SeqNum, int64(m.Size))
+				matchMsgs++
 			}
 		}
-		atomic.AddInt32(&processedFolders, 1)
-
-		/* ── live progress line ── */
 		if statsMode {
-			fmt.Printf("\r⏳ %2d/%2d folders — msgs: %d — groups: %d",
-				processedFolders, len(folders),
-				scanned, groups)
+			fmt.Printf("\r⏳ %2d/%2d folders  msgs:%d", i+1, len(folders), totMsgs)
 		} else {
-			fmt.Printf("\r⏳ %2d/%2d folders — matches: %d",
-				processedFolders, len(folders), matches)
+			fmt.Printf("\r⏳ %2d/%2d folders  matches:%d", i+1, len(folders), matchMsgs)
 		}
-		_ = i // silence unused
 	}
-	fmt.Print("\r                                              \r") // clear line
+	fmt.Print("\r                                             \r")
 
-	/* ───── match mode output & delete ───── */
+	/* match mode output & delete */
 	if !statsMode {
-		if target.Count == 0 {
-			fmt.Printf("No matches for \"%s\" in %s\n", *match, strings.ToUpper(*field))
+		if target.Cnt == 0 {
+			fmt.Println("Nothing matches")
 			return
 		}
-		fmt.Printf("\nMatches for \"%s\" in %s\n", *match, strings.ToUpper(*field))
+		fmt.Printf("\nMatches for \"%s\" (%s)\n", *matchF, *fieldF)
 		for f, ids := range target.ByFolder {
-			fmt.Printf("  %-36s %6d\n", f, len(ids))
+			fmt.Printf("  %-35s %6d\n", f, len(ids))
 		}
-		fmt.Printf("Total: %d messages  (%.1f MB)\n",
-			target.Count, float64(target.Bytes)/(1024*1024))
-		fmt.Print("Delete them? (y/N): ")
-		var in string
-		fmt.Scanln(&in)
-		if strings.ToLower(in) != "y" {
-			return
+		fmt.Printf("Total: %d msgs  %.1f MB\n", target.Cnt, float64(target.Bytes)/(1024*1024))
+		fmt.Print("Delete? (y/N): ")
+		var ans string
+		fmt.Scanln(&ans)
+		if strings.ToLower(ans) == "y" {
+			wipe(cli, target.ByFolder)
 		}
-		wipe(cli, target.ByFolder)
 		return
 	}
 
-	/* ───── stats mode table & interactive delete ───── */
+	/* stats mode table */
 	type pair struct{ b *bucket }
 	var list []pair
-	for _, b := range buckets {
-		list = append(list, pair{b})
+	for _, v := range buckets {
+		list = append(list, pair{v})
 	}
 	if len(list) == 0 {
-		fmt.Println("No messages found.")
+		fmt.Println("Mailbox empty")
 		return
 	}
-	sort.Slice(list, func(i, j int) bool { return list[i].b.Count > list[j].b.Count })
+	sort.Slice(list, func(i, j int) bool { return list[i].b.Cnt > list[j].b.Cnt })
 
 	page := 0
 	for {
-		start, end := page*pageSize, (page+1)*pageSize
+		start, end := page*pageSz, (page+1)*pageSz
 		if start >= len(list) {
 			fmt.Println("End")
 			return
@@ -336,28 +410,22 @@ func main() {
 		if end > len(list) {
 			end = len(list)
 		}
-
-		fmt.Printf("\n%s %d‑%d / %d  (group by %s)\n",
-			strings.ToUpper(*field), start+1, end, len(list), *field)
-
+		fmt.Printf("\n%s %d‑%d / %d\n", strings.ToUpper(*fieldF), start+1, end, len(list))
 		if sizeOn {
 			fmt.Println("┌────┬──────────────────────────────────────────┬────────┬────────┐")
-			fmt.Printf("│ %-2s │ %-40s │ %-6s │ %-6s │\n", "#", strings.ToUpper(*field), "MSGS", "MB")
+			fmt.Printf("│ # │ %-40s │ MSGS │  MB │\n", strings.ToUpper(*fieldF))
 			fmt.Println("├────┼──────────────────────────────────────────┼────────┼────────┤")
 		} else {
 			fmt.Println("┌────┬──────────────────────────────────────────┬────────┐")
-			fmt.Printf("│ %-2s │ %-40s │ %-6s │\n", "#", strings.ToUpper(*field), "MSGS")
+			fmt.Printf("│ # │ %-40s │ MSGS │\n", strings.ToUpper(*fieldF))
 			fmt.Println("├────┼──────────────────────────────────────────┼────────┤")
 		}
-
 		for i := start; i < end; i++ {
 			b := list[i].b
 			if sizeOn {
-				fmt.Printf("│ %2d │ %-40s │ %6d │ %6.1f │\n",
-					i-start+1, trim(b.Key), b.Count, float64(b.Bytes)/(1024*1024))
+				fmt.Printf("│ %2d │ %-40s │ %6d │ %6.1f │\n", i-start+1, trim(b.Key), b.Cnt, float64(b.Bytes)/(1024*1024))
 			} else {
-				fmt.Printf("│ %2d │ %-40s │ %6d │\n",
-					i-start+1, trim(b.Key), b.Count)
+				fmt.Printf("│ %2d │ %-40s │ %6d │\n", i-start+1, trim(b.Key), b.Cnt)
 			}
 		}
 		if sizeOn {
@@ -365,8 +433,7 @@ func main() {
 		} else {
 			fmt.Println("└────┴──────────────────────────────────────────┴────────┘")
 		}
-
-		fmt.Print("number=delete  n/p=next/prev  q=quit : ")
+		fmt.Print("num=del  n/p  q : ")
 		var in string
 		fmt.Scanln(&in)
 		switch strings.ToLower(in) {
@@ -379,22 +446,21 @@ func main() {
 		case "q":
 			return
 		default:
-			n, err := strconv.Atoi(in)
-			if err != nil || n < 1 || n > end-start {
+			idx, err := strconv.Atoi(in)
+			if err != nil || idx < 1 || idx > end-start {
 				fmt.Println("bad input")
 				continue
 			}
-			b := list[start+n-1].b
-			fmt.Printf("Delete ALL for \"%s\" (%d msgs)? (y/N): ", b.Key, b.Count)
-			var conf string
-			fmt.Scanln(&conf)
-			if strings.ToLower(conf) != "y" {
-				continue
-			}
-			wipe(cli, b.ByFolder)
-			list = append(list[:start+n-1], list[start+n:]...)
-			if start >= len(list) && page > 0 {
-				page--
+			b := list[start+idx-1].b
+			fmt.Printf("Delete ALL for \"%s\" (%d)? (y/N): ", b.Key, b.Cnt)
+			var confirm string
+			fmt.Scanln(&confirm)
+			if strings.ToLower(confirm) == "y" {
+				wipe(cli, b.ByFolder)
+				list = append(list[:start+idx-1], list[start+idx:]...)
+				if start >= len(list) && page > 0 {
+					page--
+				}
 			}
 		}
 	}
