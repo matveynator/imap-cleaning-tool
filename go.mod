@@ -1,4 +1,4 @@
-module imap-cleaning-tool
+module imap-tool
 
 go 1.23.2
 
