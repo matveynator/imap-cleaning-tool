@@ -15,33 +15,33 @@ A simple command-line utility to **backup**, **restore**, or **delete** emails f
 ### Linux:
 
 ```bash
-sudo curl -L https://files.zabiyaka.net/imap-tool/latest/linux/amd64/imap-tool -o /usr/local/bin/imap-tool
-sudo chmod +x /usr/local/bin/imap-tool
-imap-tool -h
+sudo curl -L https://files.zabiyaka.net/imap-tool/latest/linux/amd64/imap-tool -o /usr/local/bin/imap-tool;
+sudo chmod +x /usr/local/bin/imap-tool;
+imap-tool -h;
 ```
 
 ### Mac:
 
 ```bash
-sudo curl -L https://files.zabiyaka.net/imap-tool/latest/mac/amd64/imap-tool -o /usr/local/bin/imap-tool
-sudo chmod +x /usr/local/bin/imap-tool
-imap-tool -h
+sudo curl -L https://files.zabiyaka.net/imap-tool/latest/mac/amd64/imap-tool -o /usr/local/bin/imap-tool;
+sudo chmod +x /usr/local/bin/imap-tool;
+imap-tool -h;
 ```
 
 ### FreeBSD:
 
 ```bash
-sudo curl -L https://files.zabiyaka.net/imap-tool/latest/freebsd/amd64/imap-tool -o /usr/local/bin/imap-tool
-sudo chmod +x /usr/local/bin/imap-tool
-imap-tool -h
+sudo curl -L https://files.zabiyaka.net/imap-tool/latest/freebsd/amd64/imap-tool -o /usr/local/bin/imap-tool;
+sudo chmod +x /usr/local/bin/imap-tool;
+imap-tool -h;
 ```
 
 ### OpenBSD:
 
 ```bash
-sudo curl -L https://files.zabiyaka.net/imap-tool/latest/openbsd/amd64/imap-tool -o /usr/local/bin/imap-tool
-sudo chmod +x /usr/local/bin/imap-tool
-imap-tool -h
+sudo curl -L https://files.zabiyaka.net/imap-tool/latest/openbsd/amd64/imap-tool -o /usr/local/bin/imap-tool;
+sudo chmod +x /usr/local/bin/imap-tool;
+imap-tool -h;
 ```
 
 > For other variants visit https://files.zabiyaka.net/imap-tool/latest
