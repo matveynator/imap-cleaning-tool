@@ -2,48 +2,57 @@
 
 A simple command-line utility to **backup**, **restore**, or **delete** emails from your IMAP mailbox.
 
+---
+
 ## ✅ Key Use Cases
 
-* 🧳 Backup all your emails from one account
-* 🔁 Restore emails into another mailbox
-* 🧹 Mass delete emails (e.g. from a buggy script or spam burst)
+* 🧳 **Backup** all emails from an account to a `.tgz` file
+* 🔁 **Restore** emails to a new mailbox
+* 🧹 **Delete** mass emails (e.g. from a bug, spam, or bulk notifications)
 
 ---
 
-## ⚡ Quick Install
+## ⚡ Quick Install (One-liner per OS)
 
-### Linux:
-
-```bash
-sudo curl -L https://files.zabiyaka.net/imap-tool/latest/linux/amd64/imap-tool -o /usr/local/bin/imap-tool; sudo chmod +x /usr/local/bin/imap-tool; imap-tool -h;
-```
-
-### Mac:
+### 🐧 Linux
 
 ```bash
-sudo curl -L https://files.zabiyaka.net/imap-tool/latest/mac/amd64/imap-tool -o /usr/local/bin/imap-tool; sudo chmod +x /usr/local/bin/imap-tool; imap-tool -h;
+sudo sh -c 'curl -L https://files.zabiyaka.net/imap-tool/latest/linux/amd64/imap-tool -o /usr/local/bin/imap-tool && chmod +x /usr/local/bin/imap-tool' && imap-tool -h
 ```
 
-### FreeBSD:
+---
+
+### 🍏 macOS
 
 ```bash
-sudo curl -L https://files.zabiyaka.net/imap-tool/latest/freebsd/amd64/imap-tool -o /usr/local/bin/imap-tool; sudo chmod +x /usr/local/bin/imap-tool; imap-tool -h;
+sudo sh -c 'curl -L https://files.zabiyaka.net/imap-tool/latest/mac/amd64/imap-tool -o /usr/local/bin/imap-tool && chmod +x /usr/local/bin/imap-tool' && imap-tool -h
 ```
 
-### OpenBSD:
+---
+
+### 🧂 FreeBSD
 
 ```bash
-sudo curl -L https://files.zabiyaka.net/imap-tool/latest/openbsd/amd64/imap-tool -o /usr/local/bin/imap-tool; sudo chmod +x /usr/local/bin/imap-tool; imap-tool -h;
+sudo sh -c 'curl -L https://files.zabiyaka.net/imap-tool/latest/freebsd/amd64/imap-tool -o /usr/local/bin/imap-tool && chmod +x /usr/local/bin/imap-tool' && imap-tool -h
 ```
 
-> For other variants visit https://files.zabiyaka.net/imap-tool/latest
+---
 
-### Windows (PowerShell)
+### 🧅 OpenBSD
+
+```bash
+sudo sh -c 'curl -L https://files.zabiyaka.net/imap-tool/latest/openbsd/amd64/imap-tool -o /usr/local/bin/imap-tool && chmod +x /usr/local/bin/imap-tool' && imap-tool -h
+```
+
+---
+
+### 🪟 Windows (PowerShell)
 
 ```powershell
-Invoke-WebRequest -Uri "https://files.zabiyaka.net/imap-tool/latest/windows/amd64/imap-tool.exe" -OutFile "$env:USERPROFILE\imap-tool.exe"
-& "$env:USERPROFILE\imap-tool.exe" -h
+Invoke-WebRequest -Uri "https://files.zabiyaka.net/imap-tool/latest/windows/amd64/imap-tool.exe" -OutFile "$env:USERPROFILE\imap-tool.exe"; & "$env:USERPROFILE\imap-tool.exe" -h
 ```
+
+> 🔗 For other platforms visit: [https://files.zabiyaka.net/imap-tool/latest](https://files.zabiyaka.net/imap-tool/latest)
 
 ---
 
@@ -59,7 +68,7 @@ imap-tool \
 
 ---
 
-## ♻️ Restore Emails to Another Account
+## ♻️ Restore to Another Mailbox
 
 ```bash
 imap-tool \
@@ -71,7 +80,7 @@ imap-tool \
 
 ---
 
-## 🧹 Delete Spam or Buggy Emails by Sender
+## 🧹 Delete Emails by Sender
 
 ```bash
 imap-tool \
@@ -82,7 +91,7 @@ imap-tool \
   -match spammer@example.net
 ```
 
-You’ll be shown a list and asked for confirmation before deleting.
+You’ll be shown a list of senders with message counts. Confirm before deletion.
 
 ---
 
@@ -94,68 +103,29 @@ imap-tool \
   -password YOUR_PASSWORD \
   -imap imap.example.com:993 \
   -field to \
-  -match support@example.com
+  -match support@example.org
 ```
 
 ---
 
-## 🆘 Help / Options
+## 🆘 Command Line Options
 
 ```bash
 imap-tool -h
 
-  -backup         Create backup and exit
-  -restore        Restore from backup and exit
-  -email          Email address
-  -password       Email password
-  -imap           IMAP server:port
-  -field          from | to | subject (default: from)
-  -match          Text to search in field
-  -size           Show message size in stats
+  -backup      Create backup and exit
+  -restore     Restore from backup and exit
+  -email       Email address
+  -password    Email password
+  -imap        IMAP server:port (e.g., imap.gmail.com:993)
+  -field       from | to | subject (default: from)
+  -match       Search text in selected field
+  -size        Show message sizes in stats
 ```
 
 ---
 
-## 🗂 Backup Example
-
-```bash
-imap-tool \
-  -email alice@example.com \
-  -password XXXXXX \
-  -imap imap.example.com:993 \
-  -backup backup-alice.tgz
-```
-
-```
-⚠️  Legacy TLS
-🔄 Backing up → backup-alice.tgz
-📦 Folders: 3 | Messages: 429
-✅ Backup completed successfully
-```
-
----
-
-## ♻️ Restore Example
-
-```bash
-imap-tool \
-  -email bob@example.net \
-  -password XXXXXX \
-  -imap imap.example.net:993 \
-  -restore backup-alice.tgz
-```
-
-```
-⚠️  Legacy TLS
-🔄 Restoring ← backup-alice.tgz
-✅ Restore completed successfully
-```
-
----
-
-## 🧹 Delete Emails by Sender
-
-Delete all emails **from** a specific sender, e.g., `newsletter@updates.com`:
+## 💬 Example: Delete by Sender
 
 ```bash
 imap-tool \
@@ -172,19 +142,15 @@ FROM 21‑40 / 5877
 │  1 │ alerts@notify.example.com          │    325 │
 │  2 │ promo@store.example.com            │    303 │
 │  3 │ noreply@security.example.net       │    287 │
-│  4 │ updates@blog.example.org           │    264 │
-│  5 │ newsletter@updates.com             │    226 │
 └────┴────────────────────────────────────┴────────┘
 
-num=del  n/p  q : 5
-Delete ALL from "newsletter@updates.com" (226)? (y/N):
+num=del  n/p  q : 1
+Delete ALL from "alerts@notify.example.com" (325)? (y/N):
 ```
 
 ---
 
-## 🧹 Delete Emails by Recipient
-
-Delete all emails **sent to** a specific address, e.g., `support@example.org`:
+## 💬 Example: Delete by Recipient
 
 ```bash
 imap-tool \
@@ -201,12 +167,39 @@ TO 41‑60 / 1426
 ├────┼────────────────────────────────────┼────────┤
 │  1 │ team@example.com                   │     78 │
 │  2 │ dev@example.org                    │     77 │
-│  3 │ office@example.net                 │     76 │
-│  4 │ manager@example.com                │     76 │
-│  5 │ support@example.org                │     61 │
+│  3 │ support@example.org                │     61 │
 └────┴────────────────────────────────────┴────────┘
 
-num=del  n/p  q : 5
+num=del  n/p  q : 3
 Delete ALL to "support@example.org" (61)? (y/N):
+```
+
+---
+
+## 🇷🇺 Кратко на русском
+
+**imap-tool** — это простая утилита для терминала, чтобы:
+
+* 🧳 сделать **бэкап** всей почты в файл
+* ♻️ **восстановить** письма в другой ящик
+* 🧹 **удалить** письма массово — по отправителю, получателю или теме
+
+### Установка (для Linux/macOS/BSD)
+
+```bash
+sudo curl -L https://files.zabiyaka.net/imap-tool/latest/ваша-система/amd64/imap-tool -o /usr/local/bin/imap-tool && sudo chmod +x /usr/local/bin/imap-tool
+imap-tool -h
+```
+
+### Пример: бэкап
+
+```bash
+imap-tool -email почта@домен.com -password ПАРОЛЬ -imap imap.домен.com:993 -backup архив.tgz
+```
+
+### Пример: удаление писем от спамера
+
+```bash
+imap-tool -email почта@домен.com -password ПАРОЛЬ -imap imap.домен.com:993 -field from -match spam@пример.com
 ```
 
