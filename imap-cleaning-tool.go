@@ -413,11 +413,11 @@ func main() {
 		fmt.Printf("\n%s %d‑%d / %d\n", strings.ToUpper(*fieldF), start+1, end, len(list))
 		if sizeOn {
 			fmt.Println("┌────┬──────────────────────────────────────────┬────────┬────────┐")
-			fmt.Printf("│ # │ %-40s │ MSGS │  MB │\n", strings.ToUpper(*fieldF))
+			fmt.Printf("│  # │ %-40s │  MSGS  │  MB │\n", strings.ToUpper(*fieldF))
 			fmt.Println("├────┼──────────────────────────────────────────┼────────┼────────┤")
 		} else {
 			fmt.Println("┌────┬──────────────────────────────────────────┬────────┐")
-			fmt.Printf("│ # │ %-40s │ MSGS │\n", strings.ToUpper(*fieldF))
+			fmt.Printf("│  # │ %-40s │  MSGS  │\n", strings.ToUpper(*fieldF))
 			fmt.Println("├────┼──────────────────────────────────────────┼────────┤")
 		}
 		for i := start; i < end; i++ {
